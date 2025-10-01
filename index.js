@@ -1,48 +1,94 @@
-// index.js — Bot mínimo
-require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
+require("dotenv").config();
+const { Telegraf } = require("telegraf");
+const { Pool } = require("pg");
 
-const token = process.env.BOT_TOKEN;
-if (!token) {
-  console.error('Faltou o BOT_TOKEN no .env');
-  process.exit(1);
-}
-
-const bot = new Telegraf(token);
-
-// 1) /start
-bot.start((ctx) => ctx.reply('Bem-vindo! Envie /q para receber uma questão.'));
-
-// 2) Questão de teste (só para ver funcionando)
-const question = {
-  subject: 'Português',
-  stem: 'Assinale a alternativa correta.',
-  choices: ['Opção 1', 'Opção 2', 'Opção 3', 'Opção 4'],
-  answerKey: 'B',
-  explanation: 'Porque a alternativa B está correta.'
-};
-
-// 3) /q → envia questão com botões A-D
-bot.command('q', async (ctx) => {
-  const letters = ['A','B','C','D'];
-  const keyboard = letters.map((L, i) => [Markup.button.callback(`${L}) ${question.choices[i]}`, `ans:${L}`)]);
-  const text = `<b>${question.subject}</b>\n${question.stem}`;
-  await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(keyboard) });
+// Conexão com o banco Neon
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
-// 4) Clique no botão → corrige
-bot.action(/^ans:(.+)$/, async (ctx) => {
-  const choice = ctx.match[1];
-  await ctx.answerCbQuery(); // tira o "relógio"
-  const correct = question.answerKey;
-  const exp = `\n\n<b>Comentário:</b> ${question.explanation}`;
-  if (choice === correct) {
-    await ctx.reply('✅ CORRETA!' + exp, { parse_mode: 'HTML' });
-  } else {
-    await ctx.reply(`❌ INCORRETA. Gabarito: ${correct}` + exp, { parse_mode: 'HTML' });
+const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// /start -> cadastra aluno
+bot.start(async (ctx) => {
+  const telegramId = ctx.from.id;
+  const name = ctx.from.first_name;
+
+  try {
+    await pool.query(
+      `INSERT INTO users (telegram_id, name) 
+       VALUES ($1, $2)
+       ON CONFLICT (telegram_id) DO NOTHING`,
+      [telegramId, name]
+    );
+    ctx.reply(`Bem-vindo, ${name}! Você foi cadastrado ✅\nUse /q para receber uma questão.`);
+  } catch (err) {
+    console.error(err);
+    ctx.reply("Erro ao cadastrar usuário ❌");
   }
 });
 
-// 5) Inicia em "polling" (não precisa webhook ainda)
+// /q -> sorteia e envia questão
+bot.command("q", async (ctx) => {
+  try {
+    const res = await pool.query(
+      "SELECT * FROM questions ORDER BY RANDOM() LIMIT 1"
+    );
+    if (res.rows.length === 0) return ctx.reply("Nenhuma questão disponível 😢");
+
+    const q = res.rows[0];
+
+    const text = `📚 *${q.subject}*\n\n${q.statement}\n\nA) ${q.a}\nB) ${q.b}\nC) ${q.c}\nD) ${q.d}\n\nResponda com A, B, C ou D.`;
+
+    await ctx.replyWithMarkdown(text);
+
+    // Salva histórico de envio
+    await pool.query(
+      "INSERT INTO user_questions (telegram_id, question_id) VALUES ($1, $2)",
+      [ctx.from.id, q.id]
+    );
+  } catch (err) {
+    console.error(err);
+    ctx.reply("Erro ao buscar questão ❌");
+  }
+});
+
+// Responder A/B/C/D
+bot.hears(/^[ABCD]$/i, async (ctx) => {
+  const answer = ctx.message.text.toUpperCase();
+  const telegramId = ctx.from.id;
+
+  try {
+    // Última questão enviada para o usuário
+    const res = await pool.query(
+      `SELECT uq.id, q.correct 
+       FROM user_questions uq
+       JOIN questions q ON uq.question_id = q.id
+       WHERE uq.telegram_id = $1 AND uq.answered = FALSE
+       ORDER BY uq.sent_at DESC LIMIT 1`,
+      [telegramId]
+    );
+
+    if (res.rows.length === 0) return ctx.reply("Nenhuma questão pendente!");
+
+    const { id, correct } = res.rows[0];
+    const isCorrect = correct === answer;
+
+    // Atualiza resposta
+    await pool.query(
+      `UPDATE user_questions 
+       SET answered = TRUE, answer_given = $1, correct = $2 
+       WHERE id = $3`,
+      [answer, isCorrect, id]
+    );
+
+    ctx.reply(isCorrect ? "✅ Acertou! Boa!" : `❌ Errou! Resposta correta: ${correct}`);
+  } catch (err) {
+    console.error(err);
+    ctx.reply("Erro ao salvar resposta ❌");
+  }
+});
+
 bot.launch();
-console.log('Bot ligado. Envie /start no Telegram.');
+console.log("🤖 Bot rodando...");
