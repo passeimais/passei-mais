@@ -55,6 +55,7 @@ bot.command("q", async (ctx) => {
 });
 
 // Responder A/B/C/D
+// Responder A/B/C/D
 bot.hears(/^[ABCD]$/i, async (ctx) => {
   const answer = ctx.message.text.toUpperCase();
   const telegramId = ctx.from.id;
@@ -62,7 +63,7 @@ bot.hears(/^[ABCD]$/i, async (ctx) => {
   try {
     // Última questão enviada para o usuário
     const res = await pool.query(
-      `SELECT uq.id, q.correct 
+      `SELECT uq.id, q.correct_answer
        FROM user_questions uq
        JOIN questions q ON uq.question_id = q.id
        WHERE uq.telegram_id = $1 AND uq.answered = FALSE
@@ -72,8 +73,8 @@ bot.hears(/^[ABCD]$/i, async (ctx) => {
 
     if (res.rows.length === 0) return ctx.reply("Nenhuma questão pendente!");
 
-    const { id, correct } = res.rows[0];
-    const isCorrect = correct === answer;
+    const { id, correct_answer } = res.rows[0];
+    const isCorrect = correct_answer === answer;
 
     // Atualiza resposta
     await pool.query(
@@ -83,10 +84,10 @@ bot.hears(/^[ABCD]$/i, async (ctx) => {
       [answer, isCorrect, id]
     );
 
-    ctx.reply(isCorrect ? "✅ Acertou! Boa!" : `❌ Errou! Resposta correta: ${correct}`);
+    ctx.reply(isCorrect ? "✅ Acertou! Boa!" : "❌ Errou, continue tentando!");
   } catch (err) {
     console.error(err);
-    ctx.reply("Erro ao salvar resposta ❌");
+    ctx.reply("Erro ao registrar resposta ❌");
   }
 });
 
