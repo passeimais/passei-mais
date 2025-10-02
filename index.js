@@ -56,40 +56,58 @@ bot.command("q", async (ctx) => {
 
 // Responder A/B/C/D
 // Responder A/B/C/D
+// Responder A/B/C/D
 bot.hears(/^[ABCD]$/i, async (ctx) => {
-  const answer = ctx.message.text.toUpperCase();
+  const answer = ctx.message.text.trim().toUpperCase();
   const telegramId = ctx.from.id;
 
   try {
-    // Última questão enviada para o usuário
-    const res = await pool.query(
-      `SELECT uq.id, q.correct_answer
-       FROM user_questions uq
-       JOIN questions q ON uq.question_id = q.id
-       WHERE uq.telegram_id = $1 AND uq.answered = FALSE
-       ORDER BY uq.sent_at DESC LIMIT 1`,
-      [telegramId]
-    );
+    // Pega a última questão pendente desse usuário
+    const { rows } = await pool.query(`
+      SELECT 
+        uq.id              AS user_question_id,
+        q.id               AS question_id,
+        q.correct          AS correct
+      FROM user_questions uq
+      JOIN questions q      ON q.id = uq.question_id
+      WHERE uq.telegram_id = $1
+        AND uq.answered = FALSE
+      ORDER BY uq.sent_at DESC
+      LIMIT 1
+    `, [telegramId]);
 
-    if (res.rows.length === 0) return ctx.reply("Nenhuma questão pendente!");
+    if (rows.length === 0) {
+      await ctx.reply('📭 Nenhuma questão pendente. Envie /questao para receber uma.');
+      return;
+    }
 
-    const { id, correct_answer } = res.rows[0];
-    const isCorrect = correct_answer === answer;
+    const pending = rows[0];
+    const isCorrect = answer === pending.correct;
 
-    // Atualiza resposta
-    await pool.query(
-      `UPDATE user_questions 
-       SET answered = TRUE, answer_given = $1, correct = $2 
-       WHERE id = $3`,
-      [answer, isCorrect, id]
-    );
+    // Atualiza o registro com a resposta
+    await pool.query(`
+      UPDATE user_questions
+      SET answered = TRUE,
+          answer_given = $1,
+          correct = $2
+      WHERE id = $3
+    `, [answer, isCorrect, pending.user_question_id]);
 
-    ctx.reply(isCorrect ? "✅ Acertou! Boa!" : "❌ Errou, continue tentando!");
+    // Feedback imediato
+    if (isCorrect) {
+      await ctx.reply('✅ Resposta correta! Parabéns!');
+    } else {
+      await ctx.reply(`❌ Resposta incorreta.\nA correta era: ${pending.correct}`);
+    }
+
+    await ctx.reply('Quer outra? Envie "Questão do dia" ou /questao');
+
   } catch (err) {
     console.error(err);
-    ctx.reply("Erro ao registrar resposta ❌");
+    await ctx.reply('⚠️ Erro ao validar sua resposta. Tente novamente em instantes.');
   }
 });
+
 
 bot.launch();
 console.log("🤖 Bot rodando...");
